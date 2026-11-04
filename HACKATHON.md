@@ -2,15 +2,15 @@
 
 Every brain has a different shape. Before researchers can compare brain structures, they need to align corresponding anatomy—a process called registration.
 
-FireANTs offers promising GPU acceleration for registration. Our hackathon project asks whether it can provide useful registrations and consistent downstream results inside pyAFQ, a tool for studying the brain’s white-matter pathways.
+FireANTs offers GPU acceleration for registration. Our hackathon project integrates it into pyAFQ, a tool for studying the brain’s white-matter pathways, with minimal additional code, correct image and streamline transforms, and measured runtime benefit.
 
 ## Start here
 
 Read [SPEC.md](SPEC.md) for the source-reviewed implementation plan.
 
-Our first milestone is a real-data feasibility experiment: compare registration quality, runtime, and inverse-transform accuracy on one Stanford HARDI subject before building the integration.
+Build the smallest optional Python integration using existing FireANTs, DIPY and pyAFQ functionality. Add focused tests for the new boundaries and reuse existing coverage. Validate correctness and complete registration runtime against SynMap on one Stanford HARDI subject, using the same harness throughout development.
 
-**Current status:** specification prepared; real-data feasibility remains untested.
+**Current status:** coordinate decoder and its analytic tests merged in PR #6. The mapping class, end-to-end correctness, and performance measurements remain to be implemented. Retain the decoder only if the selected integration uses it.
 
 ## How to contribute
 
