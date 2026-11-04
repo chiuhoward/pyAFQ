@@ -1,22 +1,26 @@
 # FireANTs registration backend for pyAFQ
 
-**Status:** Source-reviewed hackathon spec; real-data feasibility untested  
-**Owner:** Howard Chiu · **Updated:** 2026-10-26  
+**Status:** Integration planned; coordinate decoder merged; end-to-end correctness and performance unmeasured
+
+**Owner:** Howard Chiu · **Updated:** 2026-11-04
+
 **Target repository:** [tractometry/pyAFQ](https://github.com/tractometry/pyAFQ)
 
 ## 1. Question and pitch
 
-**Can FireANTs produce correct, useful registrations in pyAFQ, and can GPU acceleration make it worth adding as an optional backend?** Answer that question on one real subject before investing in integration infrastructure.
+**Integrate FireANTs as an optional pyAFQ registration backend with minimal additional code, correct image and streamline transforms, and a measured runtime benefit.** Integration is the project objective; validation establishes whether the implementation meets those acceptance criteria.
 
-Implement an optional `FireANTsMap`, preserving the existing `SynMap` default. CPU execution is required for accessibility and debugging; speed is an empirical reason to pursue the backend, not a promise. A correct CPU prototype is a hackathon result. An upstream performance pitch needs measured benefit, preferably a complete GPU run including extraction and inversion.
+Implement an optional `FireANTsMap`, preserving the existing `SynMap` default. CPU execution is required for accessibility and debugging. Measure complete usable-map time against `SynMap`; use GPU execution to demonstrate the intended acceleration when CPU offers no benefit. A working integration without a measured speedup is partial completion, not evidence of faster registration.
 
 ## 2. Two tiers and working rules
 
-**Must-have for v1:** the §6 image/point/serialization contract; all §10A analytic tests; a real-data CPU feasibility run in M0; a minimal Python mapping definition; backend-specific filenames using pyAFQ's existing persistence pattern; lazy backend imports; and the one-subject validation in §11. Leave the default mapping and shared `SynMap` behavior unchanged.
+**Must-have for v1:** the §6 image/point/serialization contract; focused tests of new adapter behavior under §10; a minimal Python mapping definition; backend-specific filenames using pyAFQ's existing persistence pattern; lazy backend imports; CPU execution; and the one-subject correctness and performance validation in §11. Leave the default mapping and shared `SynMap` behavior unchanged.
 
-**Follow-up:** config/CLI integration, package extra and release compatibility matrix, extended device/thread APIs, RNG scoping, detailed broken-import diagnostics, general geometry policy (including shear rejection), custom cache invalidation/integrity machinery, broad CI coverage, and comprehensive docs. These are not v1 acceptance conditions. Small changes needed to package an eventual first PR can be agreed with maintainers after feasibility is demonstrated.
+**Follow-up:** config/CLI integration, package extra and release compatibility matrix, extended device/thread APIs, RNG scoping, detailed broken-import diagnostics, general geometry policy (including shear rejection), custom cache invalidation/integrity machinery, broad CI coverage, and comprehensive docs. These are not v1 acceptance conditions. Small changes needed to package an eventual first PR can be agreed with maintainers when preparing submission.
 
-Record exact versions, settings, results, and unresolved issues in `NOTES_fireants.md`. Continue through routine work; pause at the explicit M0 no-go conditions or when evidence requires changing §6 or existing public behavior. Do not spend the hackathon building follow-up features. A checkpoint is a short reviewable result, not a mandatory meeting. Preparing a branch/report does not authorize publishing a PR or contacting maintainers.
+Record exact versions, settings, results, and unresolved issues in `NOTES_fireants.md`. Develop implementation and focused tests together; use one Stanford HARDI harness for integration checks, anatomical validation, and timing. Correctness failures block accepting the affected behavior; a slow CPU result guides optimization/GPU work rather than blocking integration. Discuss evidence requiring changes to §6 or existing public behavior. Do not spend the hackathon building follow-up features. Preparing a branch/report does not authorize publishing an upstream PR or contacting maintainers.
+
+Choose the smallest existing FireANTs/DIPY/pyAFQ path that satisfies the consumer contract before adding helpers. The decoder merged in PR #6 is available implementation, not a mandatory architecture: retain it if used by that path, otherwise remove or replace it together with its obsolete tests. Preserve the externally required image/point behavior, not a particular intermediate representation.
 
 ## 3. Source baseline and evidence
 
@@ -45,17 +49,19 @@ Important source findings:
 
 Before implementation, check for applicable repository instructions and record the actual checkout. If working against another revision, reconcile these findings first. A package version string alone does not establish source equivalence.
 
-## 4. Early feasibility gate: M0
+<a id="4-early-feasibility-gate-m0"></a>
 
-Run a small standalone harness on **Stanford HARDI at its actual registration/template resolution**, using the same contrast/template and affine settings as `SynMap`. Build only enough loading, extraction, and inversion code to measure the risk. M0 precedes the full adapter test suite and mapping class; no config or cache framework is needed.
+## 4. Shared real-data harness: M0
+
+Use one small harness on **Stanford HARDI at its actual registration/template resolution**, using the same contrast/template and affine settings as `SynMap`. It should call the adapter implementation as it becomes available, rather than duplicate loading, extraction, or inversion code. Begin data/environment setup and the reference run alongside implementation. M0 is a shared validation task, not permission to start M1/M2. No separate synthetic optimizer project or standalone go/no-go experiment is required.
 
 1. Record hardware, thread allocation, exact versions, image shapes, settings, and a predeclared runtime budget. Set the same job-script thread limits below for both backends before Python starts. Run the `SynMap` reference without a registration cache.
-2. Before interpreting real-data overlays, run **§10A test 4**: analytic normalized-grid decoding on a noncubic grid, including spatial-axis/component order and out-of-range coordinates. This cheap test is part of M0; retain it in M1's suite.
+2. Run the focused analytic tests for the conversion path actually used. Reuse the merged decoder checks if that helper is retained; do not rebuild upstream coordinate or registration suites.
 3. Run FireANTs SyN on CPU. Measure affine/resampling, optimization, full coordinate extraction (which includes internal inversion), full residual inversion, native-map conversion, and total usable bidirectional registration time. A short optimization run may screen failures, but cannot establish full-settings speed or quality; label it accordingly.
 4. Before judging registration quality, perform the **§7.3 comparison against FireANTs' own `evaluate` output**, using the same prealigned moving image, output grid, and interpolation/padding. Record the comparison error on a predefined valid interior. If it fails, diagnose extraction/decoding/resampling first; a bad adapter overlay is not evidence against FireANTs. Inspect the native `evaluate` image separately: if native alignment is poor too, investigate registration/input/settings rather than decoding.
 5. Once those checks pass, inspect forward alignment overlays, inverse overlays, and bidirectional point-composition errors on a predefined valid interior/brain mask. Report coverage and error in both mm and voxel units. Do not evaluate only the small region that happens to pass.
-6. Use the provisional inverse gate: 95th-percentile composition error ≤0.1 template voxel and maximum ≤0.5 template voxel, evaluating both compositions in template voxel coordinates. Report corresponding mm errors and valid coverage. These are engineering targets to review against interpolation evidence, not anatomical accuracy claims.
-7. Make a go/no-go recommendation before M2. **Failed inverse limits, visibly wrong alignment after the adapter checks pass, or CPU time far above the reference trigger a pause and rethink.** Try the §7.4 inverse alternative when appropriate; do not build around a failed mapping. Label the cause as adapter failure, backend/settings quality, inverse failure, performance limit, or unresolved; do not conflate them.
+6. Use the provisional inverse acceptance limits: 95th-percentile composition error ≤0.1 template voxel and maximum ≤0.5 template voxel, evaluating both compositions in template voxel coordinates. Report corresponding mm errors and valid coverage. These are engineering targets to review against interpolation evidence, not anatomical accuracy claims.
+7. Record correctness and performance separately. Fix decoding, inverse, or geometry failures before calling that path correct; investigate settings if FireANTs' native result is poor. A slow CPU result directs performance work and GPU measurement. It does not cancel the integration task. Implement the §7.4 fallback only if the selected inverse fails its accuracy/cost requirements.
 
 Use this allocation/thread setup in the pilot's SLURM job script, before importing numerical libraries, for **both** the `SynMap` and FireANTs runs:
 
@@ -75,9 +81,9 @@ For a local pilot, set both variables to the same explicit CPU budget instead. R
 
 Compare the same timing boundary for both methods: either include the same affine work in each total or report a shared affine stage separately. Similar-looking iteration counts are not equivalent settings across optimizers; assess runtime alongside alignment quality, not in isolation.
 
-For a concrete default decision trigger, treat >3× the reference registration time or >30 minutes for the complete FireANTs CPU result as “rethink,” unless the owner sets another budget before the pilot. These are project planning budgets, not scientific performance cutoffs. If a run times out, report the stage and elapsed time; do not extrapolate a speed claim. A substantially slower CPU result can still justify further work if a GPU run demonstrates enough value. Without that evidence, preserve the prototype and report the result before proceeding with plumbing.
+Set a practical run budget before launching; a timeout is an incomplete measurement, not a speed estimate. Report the stage and elapsed time. Slower CPU performance does not require abandoning implementation or matching GPU performance on CPU. Demonstrating acceleration still requires a comparable complete-map measurement at useful registration quality.
 
-M0 deliverable: results of both cheap adapter checks, a short timing/error table, a few overlays, the job script and harness/settings, and **go / conditional go pending GPU / no-go** with reasons. A go authorizes the remaining correctness/integration work; it does not certify validation.
+M0 deliverable: a runnable harness/job script, settings, and a short timing/error table with overlays as the adapter becomes runnable. Report passed, failed, and unrun checks and remaining work. Reuse these results in §11; no separate go decision is needed to continue implementation.
 
 ## 5. Minimal Python integration
 
@@ -206,7 +212,7 @@ Check extracted-grid sampling against FireANTs `evaluate` on valid interior poin
 
 **Fallback if accuracy or cost is unacceptable:** derive the opposite full transform from FireANTs' two halfway maps by composing them in reverse order with the appropriate inverse. For maps `Q` and `R`, if the extracted residual map is exactly `F = Q ∘ R^-1`, then `G = R ∘ Q^-1`. The inspected `syn.py` and [`compose_warp`](https://github.com/rohitrango/FireANTs/blob/f8a9cc259ab9113fc43bd99797000fa8fc34eb59/fireants/utils/util.py) provide the starting point for checking that order. Match all actual smoothing, interpolation, coordinate frames, and resolution handling; the raw tensors alone are not a proven inverse pair. An existing inverse of `R` used to extract `F` does not eliminate the need to obtain `Q^-1` for `G`.
 
-Treat this as a candidate consistent with symmetric-registration construction, not a guaranteed better or free inverse. Derive against the pinned source, test on analytic fixtures, and compare error and total cost on the same real subject. Use the same M0 error/coverage limits whichever method wins. If neither passes, the result is a no-go, not an identity fallback. Record the chosen method and any private-API reliance.
+Treat this as a candidate consistent with symmetric-registration construction, not a guaranteed better or free inverse. Implement only the chosen method; investigate the fallback if necessary. Derive against the pinned source, test on analytic fixtures, and compare error and total cost on the same real subject. Use the same error/coverage limits whichever method is selected. An inverse that fails leaves bidirectional integration incomplete; never substitute identity. Record the chosen method and any private-API reliance.
 
 Evaluate both composition directions and count invalid/out-of-support points. For residual sampling outside the template support, use zero residual extension (affine-only extrapolation); image sampling outside FOV uses zero background. Exclude invalid compositions from error summaries while reporting their number/coverage. Central anatomical coverage failure blocks validation.
 
@@ -246,14 +252,18 @@ V1 does not introduce content hashes, completion manifests, checksums, custom lo
 
 ## 10. Required correctness tests
 
+Reuse existing pyAFQ regressions and DIPY/FireANTs algorithm tests. Add tests that invoke the new adapter or provider boundary. A related upstream test that never calls our code cannot detect a regression in that boundary. Use the coverage audit to identify existing assertions before adding tests.
+
+The following are behavior obligations, not six separate test suites or an exhaustive cross-product. Combine fixtures where one independent oracle covers several obligations. Remove or replace a test when retained coverage protects the same behavior through our implementation. Do not retain tests for an intermediate helper that the integration no longer uses.
+
 ### A. Adapter mathematics, without FireANTs optimization
 
-Use independent analytic coordinate maps as the oracle, rather than deriving expected results with the helper under test. All six groups are v1 requirements:
+Use independent analytic coordinate maps as the oracle, rather than deriving expected results with the helper under test. Cover the following through the selected implementation:
 
 1. Physical identity with identical **and different** voxel grids; test image and point directions and unequal shapes.
 2. Positive/negative translations on each axis, anisotropic spacing, nonzero origins, axis flips, and an oblique orthogonal affine; check physical sign and magnitude.
 3. Nonidentity affine prealignment plus a smooth invertible spatially varying residual; distinguish `P F` from `F P` and inversion from field negation.
-4. Normalized-grid decoding on noncubic dimensions, including corners and out-of-range coordinates; distinguish spatial-axis order from component order. Run this cheap check already in M0 and retain it in the suite.
+4. If the implementation decodes normalized grids, cover noncubic dimensions, corners and out-of-range coordinates; distinguish spatial-axis order from component order. Reuse the existing decoder tests when that helper is retained.
 5. Bidirectional composition and actual `move_streamlines` on an artificial tractogram; verify destination voxel coordinates and world positions.
 6. Image/point save-reload equivalence on unequal grids, field shapes, and reference affines. Array-returning transforms do not return affines themselves.
 
@@ -263,7 +273,7 @@ For well-conditioned exact affine/translation fixtures, target maximum point err
 
 Check lazy import/construction without FireANTs, an informative error when absent on computation, ordinary cache reuse, and separation from `SynMap` files. Check actual output placement/names for validation regressions against the existing pyAFQ baseline under §9, using the same validator configuration. Only actual backend tests use `pytest.importorskip`; analytic/import checks must still run without FireANTs. One real CPU run exercises optimization, full-grid extraction, inverse, map construction, and reload. If CUDA is unavailable, report “not tested,” not a passing GPU test.
 
-Additional synthetic optimizer suites, exhaustive import/cache/device mocking, config round trips, RNG restoration, and CI matrices are follow-up. They must not delay the real-data feasibility result.
+Additional synthetic optimizer suites, exhaustive import/cache/device mocking, config round trips, RNG restoration, and CI matrices are follow-up. They must not delay the working integration or real-data validation.
 
 ## 11. One-subject validation and performance evidence
 
@@ -286,11 +296,11 @@ Agreement with `SynMap` is not ground-truth anatomical accuracy. Investigate mis
 
 **Before upstream submission, actively try to obtain at least one GPU run.** Schedule/request access early in the project; run the same subject/settings through the entire adapter, synchronizing the selected GPU at timing boundaries. Report GPU model and full bidirectional-map cost, not optimization alone. This spec does not authorize sending access requests on the owner's behalf.
 
-If CPU is slower and no GPU result is available, finish the hackathon report/prototype but defer a performance-motivated upstream submission. State what evidence is missing. A positive M0 CPU result or successful GPU result provides a reason to pursue a PR; neither establishes a broad benchmark claim.
+If CPU is slower and no GPU result is available, report correctness and integration progress separately from the unmet acceleration objective. Continue integration and seek GPU evidence; defer a performance-motivated upstream submission until benefit is demonstrated. A speedup on this subject is scoped evidence, not a broad benchmark claim.
 
 ## 12. First PR and follow-up boundaries
 
-After the core question is answered, propose a small first PR: mapping class/adapter, required tests, ordinary persistence with backend-specific names, one-subject evidence, and concise usage/limitations. Run applicable existing regression checks and report unrun checks. No default change or neighboring refactor.
+Prepare the smallest complete integration PR: mapping class/required conversion, focused tests, ordinary persistence with backend-specific names, one-subject evidence, and concise usage/limitations. Implementation and its relevant tests belong together in atomic single-issue commits. Keep experiment data, generated outputs and unused helpers out of the upstream patch. Run applicable existing regression checks and report unrun checks. No default change or neighboring refactor.
 
 Resolve minimal optional packaging and documentation needs with maintainers for that PR. The target extras file is `setup.cfg`; FireANTs already requires torch. Select release constraints only after testing the actual published package. Config/CLI exposure and its serialization tests, extended runtime controls, cache hardening, general geometry handling, and broad CI/release coverage stay in follow-ups unless maintainers explicitly require them for merge. Keep the development environment reproducible without inventing a compatibility matrix.
 
@@ -298,26 +308,25 @@ Resolve minimal optional packaging and documentation needs with maintainers for 
 
 | Milestone | Exit condition |
 |---|---|
-| M0: real-data go/no-go | Decoding and native-evaluate checks first; matched-thread CPU reference and FireANTs timing, full-field extraction/inverse accuracy/cost, overlays, and explicit decision under §4; pursue GPU access early |
-| M1: adapter correctness | §6 contract and all §10A analytic tests pass |
+| M0: shared harness | Reproducible Stanford HARDI reference and adapter runs, matched-thread timing, correctness measurements and overlays under §4; developed alongside M1/M2 |
+| M1: adapter correctness | Smallest conversion/inverse implementation with focused §10A coverage of the §6 contract |
 | M2: minimal integration | Python mapping class, lazy imports, backend filenames, ordinary native save/reload |
-| M3: demonstration | One-subject downstream comparison and reviewed overlays; GPU evidence if obtained |
+| M3: correctness and speed | One-subject downstream comparison, reviewed overlays, and measured complete-map speedup; report missing GPU/performance evidence explicitly |
 | M4: submission decision | Evidence supports practical benefit; concise PR prepared, owner reviews whether to submit |
 
-The minimum extraction/inversion harness may be built in M0 before the full M1 suite. Do not build M2 around an unresolved M0 failure. Potential work packages after a go are adapter/tests, minimal integration, and validation/reporting; agree on §6 before dividing implementation. If time runs out, report a tested partial result and remaining evidence rather than substituting infrastructure for the scientific question.
+M0 setup and M1/M2 implementation can proceed together; M2 consumes the tested M1 behavior as it becomes available. Agree on the §6 consumer contract before dividing implementation. A known coordinate/inverse defect blocks accepting that behavior, not unrelated implementation work. If time runs out, report a tested partial result and remaining correctness/performance evidence. Do not build duplicate experimental and production adapters.
 
 ## 14. V1 acceptance checklist
 
 - [ ] Exact source/runtime versions and pilot settings recorded.
 - [ ] M0 decoding and native-evaluate checks pass before judging adapter overlays; both timing runs use the same explicit job-script thread budget.
-- [ ] M0 real-data timing and inverse gate produced an explicit go decision (or conditional go justified by subsequent GPU evidence).
-- [ ] §6 behavior and all §10A analytic tests pass, including actual streamline movement and unequal grids.
+- [ ] §6 behavior has focused §10 coverage through the selected implementation, including actual streamline movement, unequal grids and inverse composition with coverage.
 - [ ] CPU end-to-end computation and native save/reload work; `SynMap` defaults/behavior remain unchanged.
 - [ ] Backend filenames are separate; imports/construction stay lazy; settings/device/threads are recorded as provenance.
 - [ ] Outputs follow pyAFQ's placement/naming conventions and introduce no feature-specific BIDS validation findings relative to matched `SynMap` outputs; preexisting upstream findings are documented, not blockers.
 - [ ] One-subject overlays, ROI agreement, bundle counts, and profiles reported with discrepancies explained.
 - [ ] GPU access/run was pursued; actual result or unavailability and its effect on submission are stated.
-- [ ] A slower CPU result without GPU evidence is reported as a prototype, not an unsupported upstream speed pitch.
+- [ ] Comparable total usable-map timing demonstrates a speedup at useful registration quality on at least one supported device; otherwise the performance objective is explicitly incomplete and no speed claim is made.
 
 ## 15. Follow-up backlog
 
