@@ -22,7 +22,7 @@ try:
 except ModuleNotFoundError:
     has_fslpy = False
 
-__all__ = ["FnirtMap", "SynMap", "SlrMap", "AffMap", "IdentityMap"]
+__all__ = ["FnirtMap", "SynMap", "FireANTsMap", "SlrMap", "AffMap", "IdentityMap"]
 
 
 logger = logging.getLogger("AFQ")
@@ -368,6 +368,92 @@ class SynMap(GeneratedMapMixin, Definition):
             write_json(meta_backward_fname, meta)
         mapping = reg.read_syn_mapping(mapping_file_forward, mapping_file_backward)
         return mapping
+
+
+class FireANTsMap(GeneratedMapMixin, Definition):
+    """Optional FireANTs SyN registration with native pyAFQ persistence.
+
+    Parameters
+    ----------
+    use_prealign : bool, optional
+        Estimate pyAFQ's affine prealignment. Default: True.
+    affine_kwargs : dict, optional
+        Parameters for DIPY affine_registration.
+    fireants_kwargs : dict, optional
+        Parameters for FireANTs SyNRegistration. Defaults to scales [4, 2, 1],
+        iterations [100, 50, 20], Adam with learning rate 0.2, compositive
+        deformation and cross-correlation loss.
+    device : str, optional
+        Explicit torch device, e.g. "cpu" or "cuda:0". Default: "cpu".
+
+    Notes
+    -----
+    Requires fireants only when computing an uncached map. Cached fields use
+    existing pyAFQ persistence; use fresh output directories when changing
+    registration settings or comparing devices.
+    """
+
+    def __init__(
+        self, use_prealign=True, affine_kwargs=None, fireants_kwargs=None, device="cpu"
+    ):
+        self.use_prealign = use_prealign
+        self.affine_kwargs = dict(affine_kwargs or {})
+        self.fireants_kwargs = dict(fireants_kwargs or {})
+        self.device = device
+
+    def get_fnames(self, extension, base_fname, sub_name, tmpl_name):
+        mapping_file = get_fname(
+            base_fname, f"_desc-fireants_from-{sub_name}_to-{tmpl_name}_xform"
+        )
+        return mapping_file + extension, mapping_file + ".json"
+
+    def get_for_subses(
+        self,
+        base_fname,
+        dwi,
+        dwi_data_file,
+        reg_subject,
+        reg_template,
+        tmpl_name,
+        subject_sls=None,
+        template_sls=None,
+    ):
+        sub_space = space_from_fname(dwi_data_file)
+        forward_file, forward_meta = self.get_fnames(
+            ".nii.gz", base_fname, sub_space, tmpl_name
+        )
+        backward_file, backward_meta = self.get_fnames(
+            ".nii.gz", base_fname, tmpl_name, sub_space
+        )
+        if not op.exists(forward_file) or not op.exists(backward_file):
+            from AFQ.utils._fireants import _register_fireants
+
+            start_time = time()
+            prealign = (
+                self.prealign(reg_subject, reg_template) if self.use_prealign else None
+            )
+            logger.info("Calculating FireANTs SyN registration on %s...", self.device)
+            mapping, meta = _register_fireants(
+                reg_subject, reg_template, prealign, self.device, self.fireants_kwargs
+            )
+            meta.update(
+                type="displacementfield",
+                dependent="dwi",
+                backend="fireants",
+                total_time=time() - start_time,
+                use_prealign=self.use_prealign,
+                prealign=None if prealign is None else prealign.tolist(),
+                affine_kwargs=self.affine_kwargs,
+                fireants_kwargs=self.fireants_kwargs,
+            )
+            for field_file, meta_file, field, affine in (
+                (forward_file, forward_meta, mapping.forward, reg_subject.affine),
+                (backward_file, backward_meta, mapping.backward, reg_template.affine),
+            ):
+                logger.info("Saving %s", field_file)
+                nib.save(nib.Nifti1Image(field, affine), field_file)
+                write_json(meta_file, meta)
+        return reg.read_syn_mapping(forward_file, backward_file)
 
 
 class SlrMap(AffineMapMixin, Definition):

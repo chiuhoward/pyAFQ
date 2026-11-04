@@ -3,6 +3,96 @@
 import numpy as np
 
 
+def _register_fireants(subject, template, prealign, device, options):
+    """Run shared-grid SyN and return a native map plus execution provenance."""
+    from importlib.metadata import version
+    from os import environ
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from time import perf_counter
+
+    import nibabel as nib
+    from dipy.align.imaffine import AffineMap
+
+    try:
+        import torch
+        from fireants.io.image import BatchedImages, Image
+        from fireants.registration.syn import SyNRegistration
+    except ImportError as exc:
+        raise ImportError("Install fireants to compute a FireANTsMap.") from exc
+
+    device = torch.device(device)
+    settings = dict(
+        scales=[4, 2, 1],
+        iterations=[100, 50, 20],
+        optimizer="Adam",
+        optimizer_lr=0.2,
+        deformation_type="compositive",
+        loss_type="cc",
+    )
+    settings.update(options)
+
+    def timestamp():
+        # CUDA work is asynchronous; timings must include completed device work.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        return perf_counter()
+
+    start = timestamp()
+    # Apply P once, before FireANTs. Both loaded images then share geometry;
+    # passing P as an initial FireANTs affine would apply prealignment twice.
+    affine_map = AffineMap(
+        prealign,
+        domain_grid_shape=template.shape,
+        domain_grid2world=template.affine,
+        codomain_grid_shape=subject.shape,
+        codomain_grid2world=subject.affine,
+    )
+    aligned = affine_map.transform(subject.get_fdata(dtype=np.float32))
+    with TemporaryDirectory() as directory:
+        batches = []
+        for name, data in (
+            ("fixed", template.get_fdata(dtype=np.float32)),
+            ("moving", aligned),
+        ):
+            path = Path(directory) / f"{name}.nii.gz"
+            nib.save(nib.Nifti1Image(data.astype(np.float32), template.affine), path)
+            batches.append(BatchedImages([Image.load_file(str(path), device=device)]))
+        fixed, moving = batches
+        registration = SyNRegistration(
+            fixed_images=fixed, moving_images=moving, **settings
+        )
+        prepared = timestamp()
+        registration.optimize()
+        optimized = timestamp()
+        coordinates = registration.get_warped_coordinates(fixed, moving)
+        coordinates = coordinates.detach().cpu().numpy()
+        extracted = timestamp()
+
+    residual = _normalized_grid_to_world_displacement(
+        coordinates, template.shape, template.affine
+    )
+    mapping = _mapping_from_displacement(residual, subject, template, prealign)
+    converted = timestamp()
+    return mapping, dict(
+        fireants_version=version("fireants"),
+        torch_version=torch.__version__,
+        dipy_version=version("dipy"),
+        numpy_version=np.__version__,
+        device=str(device),
+        torch_threads=torch.get_num_threads(),
+        thread_environment={
+            name: environ.get(name)
+            for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "SLURM_CPUS_PER_TASK")
+        },
+        fireants_settings=settings,
+        preparation_time=prepared - start,
+        optimization_time=optimized - prepared,
+        extraction_time=extracted - optimized,
+        inverse_and_conversion_time=converted - extracted,
+    )
+
+
 def _mapping_from_displacement(displacement, subject, template, prealign=None):
     """Build pyAFQ's voxel map from a full template-grid RAS-mm residual.
 
