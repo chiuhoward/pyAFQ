@@ -3,6 +3,48 @@
 import numpy as np
 
 
+def _mapping_from_displacement(displacement, subject, template, prealign=None):
+    """Build pyAFQ's voxel map from a full template-grid RAS-mm residual.
+
+    ``prealign`` pulls template RAS positions into subject RAS positions.
+    The residual samples the already prealigned subject on the template grid.
+    Images may have different native grids; the returned map has the same
+    representation as ``read_syn_mapping`` and must not be simplified again.
+    """
+    import nibabel as nib
+    from dipy.align.imwarp import DiffeomorphicMap
+    from dipy.align.vector_fields import invert_vector_field_fixed_point_3d
+
+    from AFQ._fixes import get_simplified_transform
+
+    displacement = np.ascontiguousarray(displacement, dtype=np.float32)
+    # DIPY also stops at a fixed maximum residual threshold. Starting from -u
+    # preserves exact translations; the solver still refines nonlinear fields.
+    inverse = invert_vector_field_fixed_point_3d(
+        displacement,
+        np.linalg.inv(template.affine),
+        nib.affines.voxel_sizes(template.affine),
+        100,
+        1e-3,
+        start=-displacement,
+    )
+    # DIPY applies its prealign before the forward residual and its inverse
+    # after the backward residual: G(P^-1 y) and P(F(x)), respectively.
+    mapping = DiffeomorphicMap(
+        dim=3,
+        disp_shape=template.shape,
+        disp_grid2world=template.affine,
+        domain_shape=subject.shape,
+        domain_grid2world=subject.affine,
+        codomain_shape=template.shape,
+        codomain_grid2world=template.affine,
+        prealign=None if prealign is None else np.linalg.inv(prealign),
+    )
+    mapping.forward = inverse
+    mapping.backward = displacement
+    return get_simplified_transform(mapping)
+
+
 def _normalized_grid_to_world_displacement(coordinates, image_shape, affine):
     """Decode one shared-grid FireANTs sampling map into RAS-mm displacements.
 
