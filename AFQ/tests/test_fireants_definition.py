@@ -106,8 +106,59 @@ def test_backend_filenames_persistence_and_cache(tmp_path, monkeypatch):
         meta = json.loads(Path(meta_path).read_text())
         assert meta["device"] == "cpu" and meta["torch_threads"] == 1
         assert meta["fireants_kwargs"] == {"iterations": [1], "scales": [1]}
+        # The recorded inverse must be the one the conversion actually uses.
+        assert meta["inverse"] == _fireants._INVERSE_SETTINGS
+        assert meta["inverse"]["method"] == "dipy.invert_vector_field_fixed_point_3d"
     for path in baseline_files:
         assert Path(path).read_bytes() == b"SynMap output must remain untouched"
+
+
+def test_incomplete_cache_pair_is_recomputed(tmp_path, monkeypatch):
+    image = nib.Nifti1Image(np.zeros((9, 11, 13)), np.eye(4))
+    field = np.zeros(image.shape + (3,), dtype=np.float32)
+    calls = []
+
+    def compute(*args):
+        calls.append(True)
+        mapping = read_syn_mapping(
+            nib.Nifti1Image(field, image.affine), nib.Nifti1Image(field, image.affine)
+        )
+        return mapping, {}
+
+    monkeypatch.setattr(_fireants, "_register_fireants", compute)
+    definition = FireANTsMap(use_prealign=False)
+    base = str(tmp_path / "sub-01")
+    args = (base, image, "sub-01_dwi.nii.gz", image, image, "mni")
+    definition.get_for_subses(*args)
+    # Only a matching pair is a cache hit; one surviving field must not be reused.
+    Path(definition.get_fnames(".nii.gz", base, "subject", "mni")[0]).unlink()
+    definition.get_for_subses(*args)
+    assert len(calls) == 2
+
+
+def test_unavailable_cuda_fails_before_registration(monkeypatch):
+    import types
+
+    def unused(*args, **kwargs):
+        pytest.fail("FireANTs must not be used when the requested CUDA is absent")
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.device = lambda name: types.SimpleNamespace(type=name.split(":")[0])
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    modules = {"torch": fake_torch}
+    for name in ("fireants", "fireants.io", "fireants.registration"):
+        modules[name] = types.ModuleType(name)
+    modules["fireants.io.image"] = types.ModuleType("fireants.io.image")
+    modules["fireants.io.image"].BatchedImages = unused
+    modules["fireants.io.image"].Image = types.SimpleNamespace(load_file=unused)
+    modules["fireants.registration.syn"] = types.ModuleType("fireants.registration.syn")
+    modules["fireants.registration.syn"].SyNRegistration = unused
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    image = nib.Nifti1Image(np.zeros((9, 11, 13), dtype=np.float32), np.eye(4))
+    with pytest.raises(RuntimeError, match="cuda:0.*no available CUDA device"):
+        _fireants._register_fireants(image, image, None, "cuda:0", {})
 
 
 def test_missing_backend_error_on_computation(tmp_path, monkeypatch):

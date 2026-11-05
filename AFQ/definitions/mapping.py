@@ -426,7 +426,7 @@ class FireANTsMap(GeneratedMapMixin, Definition):
             ".nii.gz", base_fname, tmpl_name, sub_space
         )
         if not op.exists(forward_file) or not op.exists(backward_file):
-            from AFQ.utils._fireants import _register_fireants
+            from AFQ.utils._fireants import _INVERSE_SETTINGS, _register_fireants
 
             start_time = time()
             prealign = (
@@ -445,6 +445,7 @@ class FireANTsMap(GeneratedMapMixin, Definition):
                 prealign=None if prealign is None else prealign.tolist(),
                 affine_kwargs=self.affine_kwargs,
                 fireants_kwargs=self.fireants_kwargs,
+                inverse=dict(_INVERSE_SETTINGS),
             )
             for field_file, meta_file, field, affine in (
                 (forward_file, forward_meta, mapping.forward, reg_subject.affine),
