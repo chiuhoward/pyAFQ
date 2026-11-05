@@ -2,6 +2,112 @@
 
 import numpy as np
 
+# Single source for the inverse solver settings and their recorded provenance.
+_INVERSE_SETTINGS = dict(
+    method="dipy.invert_vector_field_fixed_point_3d",
+    max_iter=100,
+    tolerance=1e-3,
+    start="-displacement",
+)
+
+
+def _register_fireants(subject, template, prealign, device, options):
+    """Run shared-grid SyN and return a native map plus execution provenance."""
+    from importlib.metadata import version
+    from os import environ
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from time import perf_counter
+
+    import nibabel as nib
+    from dipy.align.imaffine import AffineMap
+
+    try:
+        import torch
+        from fireants.io.image import BatchedImages, Image
+        from fireants.registration.syn import SyNRegistration
+    except ImportError as exc:
+        raise ImportError("Install fireants to compute a FireANTsMap.") from exc
+
+    requested = device
+    device = torch.device(device)
+    # Fail before any work rather than deep inside FireANTs or a silent CPU run.
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"FireANTsMap(device={requested!r}) requested CUDA, but torch reports "
+            "no available CUDA device. Use device='cpu' or a CUDA-enabled torch."
+        )
+    settings = dict(
+        scales=[4, 2, 1],
+        iterations=[100, 50, 20],
+        optimizer="Adam",
+        optimizer_lr=0.2,
+        deformation_type="compositive",
+        loss_type="cc",
+    )
+    settings.update(options)
+
+    def timestamp():
+        # CUDA work is asynchronous; timings must include completed device work.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        return perf_counter()
+
+    start = timestamp()
+    # Apply P once, before FireANTs. Both loaded images then share geometry;
+    # passing P as an initial FireANTs affine would apply prealignment twice.
+    affine_map = AffineMap(
+        prealign,
+        domain_grid_shape=template.shape,
+        domain_grid2world=template.affine,
+        codomain_grid_shape=subject.shape,
+        codomain_grid2world=subject.affine,
+    )
+    aligned = affine_map.transform(subject.get_fdata(dtype=np.float32))
+    with TemporaryDirectory() as directory:
+        batches = []
+        for name, data in (
+            ("fixed", template.get_fdata(dtype=np.float32)),
+            ("moving", aligned),
+        ):
+            # Uncompressed: gzip time would otherwise count as preparation time.
+            path = Path(directory) / f"{name}.nii"
+            nib.save(nib.Nifti1Image(data.astype(np.float32), template.affine), path)
+            batches.append(BatchedImages([Image.load_file(str(path), device=device)]))
+        fixed, moving = batches
+        registration = SyNRegistration(
+            fixed_images=fixed, moving_images=moving, **settings
+        )
+        prepared = timestamp()
+        registration.optimize()
+        optimized = timestamp()
+        coordinates = registration.get_warped_coordinates(fixed, moving)
+        coordinates = coordinates.detach().cpu().numpy()
+        extracted = timestamp()
+
+    residual = _normalized_grid_to_world_displacement(
+        coordinates, template.shape, template.affine
+    )
+    mapping = _mapping_from_displacement(residual, subject, template, prealign)
+    converted = timestamp()
+    return mapping, dict(
+        fireants_version=version("fireants"),
+        torch_version=torch.__version__,
+        dipy_version=version("dipy"),
+        numpy_version=np.__version__,
+        device=str(device),
+        torch_threads=torch.get_num_threads(),
+        thread_environment={
+            name: environ.get(name)
+            for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "SLURM_CPUS_PER_TASK")
+        },
+        fireants_settings=settings,
+        preparation_time=prepared - start,
+        optimization_time=optimized - prepared,
+        extraction_time=extracted - optimized,
+        inverse_and_conversion_time=converted - extracted,
+    )
+
 
 def _mapping_from_displacement(displacement, subject, template, prealign=None):
     """Build pyAFQ's voxel map from a full template-grid RAS-mm residual.
@@ -24,8 +130,8 @@ def _mapping_from_displacement(displacement, subject, template, prealign=None):
         displacement,
         np.linalg.inv(template.affine),
         nib.affines.voxel_sizes(template.affine),
-        100,
-        1e-3,
+        _INVERSE_SETTINGS["max_iter"],
+        _INVERSE_SETTINGS["tolerance"],
         start=-displacement,
     )
     # DIPY applies its prealign before the forward residual and its inverse
