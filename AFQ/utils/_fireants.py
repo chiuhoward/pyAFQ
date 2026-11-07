@@ -41,7 +41,7 @@ def _register_fireants(subject, template, prealign, device, options):
         scales=[4, 2, 1],
         iterations=[100, 50, 20],
         optimizer="Adam",
-        optimizer_lr=0.2,
+        optimizer_lr=0.4,
         deformation_type="compositive",
         loss_type="cc",
     )

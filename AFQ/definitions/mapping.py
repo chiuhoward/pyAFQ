@@ -381,8 +381,9 @@ class FireANTsMap(GeneratedMapMixin, Definition):
         Parameters for DIPY affine_registration.
     fireants_kwargs : dict, optional
         Parameters for FireANTs SyNRegistration. Defaults to scales [4, 2, 1],
-        iterations [100, 50, 20], Adam with learning rate 0.2, compositive
-        deformation and cross-correlation loss.
+        iterations [100, 50, 20], Adam with learning rate 0.4 (the FireANTs
+        paper reports robustness for lr >= 0.4), compositive deformation and
+        cross-correlation loss.
     device : str, optional
         Explicit torch device, e.g. "cpu" or "cuda:0". Default: "cpu".
 
